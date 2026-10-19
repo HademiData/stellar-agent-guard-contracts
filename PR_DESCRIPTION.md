@@ -1,12 +1,14 @@
-Closes #413
+Closes #399
 
 ## Summary
 
-Replace inline agent-secret placeholders in README command examples with hidden
-`AGENT_SECRET` prompts, and document the safe environment-variable form in the
-fixture and `agent-tx` guides. The prompts keep secrets out of shell history.
+Enforce the repository's formatting and Clippy standards for the standalone
+`tools/agent-tx` crate. CI runs its format and lint checks; this adds the
+matching `clippy::all` and `clippy::pedantic` deny policy, includes all features
+in the CI lint command, and documents the standalone commands for contributors.
 
 ## Verification
 
-- `./scripts/verify-docs-reachability.sh` (passed)
-- `./scripts/verify-readme.sh` (could not complete: Cargo and the WASM artifact are unavailable)
+- `cargo fmt --manifest-path tools/agent-tx/Cargo.toml --check`
+- `cargo clippy --manifest-path tools/agent-tx/Cargo.toml --all-targets --all-features -- -D warnings`
+- `cargo test --manifest-path tools/agent-tx/Cargo.toml`

@@ -30,6 +30,10 @@ cargo clippy --all-targets --all-features
 # Format check
 cargo fmt --check
 
+# Apply the format and lint gates to the standalone agent-tx crate
+cargo fmt --manifest-path tools/agent-tx/Cargo.toml --check
+cargo clippy --manifest-path tools/agent-tx/Cargo.toml --all-targets --all-features -- -D warnings
+
 # Build the contract wasm (Soroban 27 targets wasm32v1-none)
 cargo build --release --target wasm32v1-none
 
@@ -129,7 +133,7 @@ This removes all `target/` directories and `*.wasm` artifacts. The `.gitignore` 
    run `cargo test`. Adding an `Error::` branch without a JSON row fails the
    build on purpose.
 3. **`clippy::all` and `clippy::pedantic` clean** — enforced in CI with
-   `-D warnings`.
+   `-D warnings` for the contract crate and standalone `agent-tx` tool.
 4. **`cargo fmt` clean** — enforced in CI.
 5. **Doc comments on every public function** stating what it authorizes or
    changes, and which storage keys it touches.
