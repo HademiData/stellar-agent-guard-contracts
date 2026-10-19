@@ -133,6 +133,9 @@ read -rsp "Agent secret: " AGENT_SECRET; echo; export AGENT_SECRET
 agent-tx preflight --guard C... --asset C... --to G... --amount 1100
 ```
 
+Run `unset AGENT_SECRET` when you finish the shell session to clear it from
+subsequent commands.
+
 The signed path uses the registered agent secret from `AGENT_SECRET` to
 simulate through the live
 `__check_auth`. A policy denial is returned with diagnostic event details. For
