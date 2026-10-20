@@ -91,24 +91,14 @@ impl RunOutcome {
     fn exit_code(&self, expect_blocked: bool) -> i32 {
         match self {
             Self::SimulationBlocked { policy_block, .. } => {
-                if *policy_block && expect_blocked {
-                    0
-                } else {
-                    1
-                }
+                i32::from(!(*policy_block && expect_blocked))
             }
             Self::SimulationSuccessUnexpectedBlock
             | Self::SendError(_)
             | Self::EmptyHash(_)
             | Self::TransactionTimeout { .. } => 1,
             Self::TransactionSuccess { .. } => 0,
-            Self::TransactionFailure { .. } => {
-                if expect_blocked {
-                    0
-                } else {
-                    1
-                }
-            }
+            Self::TransactionFailure { .. } => i32::from(!expect_blocked),
         }
     }
 }
@@ -1133,7 +1123,7 @@ fn run(call: &Call, args: &Args) -> RunOutcome {
         }
         if st == "FAILED" {
             println!("RESULT: FAILED tx={hash}");
-            let result_xdr = gt["resultXdr"].as_str().map(|s| s.to_string());
+            let result_xdr = gt["resultXdr"].as_str().map(str::to_string);
             if let Some(ref errx) = result_xdr {
                 println!("  resultXdr: {errx}");
             }
@@ -3341,9 +3331,9 @@ fn main() {
                 )
             };
             let call = Call::Transfer { token, to, amount };
-            let args = request.args();
-            let outcome = run(&call, &args);
-            std::process::exit(outcome.exit_code(args.expect_blocked));
+            let request_args = request.args();
+            let outcome = run(&call, &request_args);
+            std::process::exit(outcome.exit_code(request_args.expect_blocked));
         }
         "transfer-from" => {
             let (Some(token), Some(from), Some(to), Some(amount)) = (
@@ -3360,17 +3350,17 @@ fn main() {
                 to,
                 amount,
             };
-            let args = request.args();
-            let outcome = run(&call, &args);
-            std::process::exit(outcome.exit_code(args.expect_blocked));
+            let request_args = request.args();
+            let outcome = run(&call, &request_args);
+            std::process::exit(outcome.exit_code(request_args.expect_blocked));
         }
         "heartbeat" => {
             let call = Call::Heartbeat;
-            let args = request.args();
-            let outcome = run(&call, &args);
-            std::process::exit(outcome.exit_code(args.expect_blocked));
+            let request_args = request.args();
+            let outcome = run(&call, &request_args);
+            std::process::exit(outcome.exit_code(request_args.expect_blocked));
         }
-        _ => exit_with(format!(
+        _ => exit_with(&format!(
             "unknown subcommand '{cmd}' (see `agent-tx --help`)"
         )),
     }
