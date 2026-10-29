@@ -84,6 +84,22 @@ non-custodial, no proxy wrappers, tested end-to-end on testnet.
 > not deploy to mainnet without an independent audit. See [SECURITY.md](SECURITY.md).
 >
 > For future contract versions, review the policy on [Enforcement-Equivalent Upgrades](#enforcement-equivalent-upgrade-policy).
+>
+## Maintainers
+
+Security review: `@aigbagbobila`
+
+Changes to the enforcement path — `src/engine.rs`, `src/window.rs`, `src/lib.rs`,
+`src/types.rs`, the rest of `src/`, `.github/workflows/`, and `SECURITY.md` — are
+owned by the maintainer and require one approving review from a security-literate
+reviewer before merge. This is enforced automatically via
+[`.github/CODEOWNERS`](.github/CODEOWNERS); it is not left to reviewer memory.
+
+A README typo and a policy-semantics change do not get the same review: anything
+under `src/` or touching the CI/security files routes to the maintainer.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full review and contribution
+process.
 
 ## Enforcement scope — read this before relying on the caps
 
@@ -96,7 +112,7 @@ Full recipient/amount enforcement — spend caps, allowlists, per-transaction li
 git clone https://github.com/Stellar-Agent-Guard/stellar-agent-guard-contracts.git
 cd stellar-agent-guard-contracts
 cargo build --release --target wasm32v1-none   # → target/wasm32v1-none/release/stellar_agent_guard_contracts.wasm
-cargo test                                      # 226 tests, isolated (no network)
+cargo test                                      # 231 tests, isolated (no network)
 
 # Read live state from the Phase-1 testnet deployment (no auth, simulation only).
 # Live, testnet protocol 28, 2026-09-08: the fixture account was DMS-frozen
@@ -151,9 +167,14 @@ The Phase-1 deployment's real `initialize` transaction:
 ```rust
 pub fn set_policy(env: Env, config: PolicyConfig)
 ```
-Admin-only (`require_auth(Admin)`). Replaces the policy, resets the rolling window, and
-starts the dead-man-switch clock at install time (a fresh policy gets full grace). The
-`PolicyConfig` fields:
+Admin-only (`require_auth(Admin)`). Replaces the policy. A policy *edit* — any `set_policy`
+while a policy is already installed — **preserves the rolling window and the
+dead-man-switch clock** ([issue #289](https://github.com/Stellar-Agent-Guard/stellar-agent-guard-contracts/issues/289)):
+pausing, tightening, or widening a policy no longer hands the agent a fresh budget or a
+fresh grace period. Only a *first* install (no policy stored, including an install after
+`revoke_policy`) seeds an empty window and arms the dead-man-switch clock at install time
+(a fresh policy gets full grace). To zero the window explicitly, call
+[`reset_window`](#reset_window) below. The `PolicyConfig` fields:
 
 Tooling can validate this CLI JSON shape against the checked-in
 [`policy.schema.json`](policy.schema.json); the contract remains the authoritative validator.
@@ -215,6 +236,18 @@ day-trader agent, payments bot, watch-only + heartbeat, max security — each wi
 rationale, explicit "what it does NOT protect against", and unaudited/mainnet/DMS-grace
 warnings, are in [`docs/policy-templates.md`](docs/policy-templates.md). A CI test
 installs every preset documented there, so the examples stay valid.
+
+### `reset_window`
+```rust
+pub fn reset_window(env: Env)
+```
+Admin-only. Explicitly zeroes the rolling spend window — the admin-attested reset that
+`set_policy` no longer performs implicitly ([issue #289](https://github.com/Stellar-Agent-Guard/stellar-agent-guard-contracts/issues/289)).
+Idempotent (resetting an absent or already-empty window is a no-op that still records the
+admin action); it does not touch the policy, `PolicyRevision`, or the dead-man-switch
+clock. Emits `EventWindowReset`. Reach for it only when a fresh budget is actually
+intended (e.g. after raising `window_cap` mid-incident); a pause, a tightening, or any
+routine policy edit leaves the window intact.
 
 ### `revoke_policy`
 ```rust
@@ -353,6 +386,32 @@ stellar contract invoke --id CAYJZT4XH5SWDXNR7MZJCCUBIDAT2KZDDUTZ7OZQEMKCPJGD4P3
 # → ✅ Transaction submitted successfully!  tx=dd327d32b18bfc6cebdf6c956503fe5318e28f8a8bc86a88cb7ee42c5d46b5e5
 ```
 
+### `pause` / `resume`
+```rust
+pub fn pause(env: Env)    // admin only — sets PolicyConfig.paused = true in place
+pub fn resume(env: Env)   // admin only — sets PolicyConfig.paused = false in place
+```
+Policy-level kill switch ([issue #290](https://github.com/Stellar-Agent-Guard/stellar-agent-guard-contracts/issues/290)):
+flips the stored policy's `paused` flag **in place** — the rolling window, the
+dead-man-switch clock, and every other field are untouched, so pausing mid-incident and
+resuming does not hand the agent a fresh budget or a fresh grace period. It is the same
+field the §4 rule #4 gate and `set_policy` write (`PolicyConfig.paused`); there is no
+second pause flag anywhere in storage. Both functions are admin-only
+(`require_auth(Admin)`), idempotent (pausing a paused account — or resuming a running one
+— is not an error; the event still records the action), and require an installed policy
+(`NoPolicy` otherwise — with no policy the account is default-deny and there is nothing to
+pause). Emits `EventPaused` / `EventResumed` carrying `by` and `revision`;
+`PolicyRevision` advances only when the call actually flips the flag, so `revision`
+changing is exactly “the effective policy changed”. `resume` restores admissibility, not
+budget: it does not refund what was spent while paused.
+
+> **Which lever — `pause` or `freeze`?** Reach for `pause`/`resume` for routine,
+> policy-level halts and restarts: they bind only while a policy is installed and preserve
+> spend accounting. Reach for `freeze`/`unfreeze` in an emergency: `freeze` sets the
+> account-level `AdminFrozen` brake that binds even a policyless account — and note that
+> `unfreeze` also re-arms the dead-man-switch clock (warning above), while `resume` touches
+> nothing but the flag.
+
 ### `policy` (read)
 ```rust
 pub fn policy(env: Env) -> Option<PolicyConfig>
@@ -470,6 +529,18 @@ stellar contract invoke --id GUARD_CONTRACT_ID --network testnet --source-accoun
 When a cap is disabled, its corresponding detail is `None` rather than a sentinel value.
 The SDK and dashboard should consume these fields for pre-signing warnings and blocked-call
 operator reports.
+
+For a payment run, `check_batch` evaluates transfers in order while staging each allowed
+admission in memory. It does not write state, so callers can inspect every per-transfer
+verdict and the overall admissibility before signing the run:
+```rust
+pub fn check_batch(env: Env, asset: Address, transfers: Vec<BatchTransfer>) -> BatchCheckResult
+```
+For example, if a 60-unit transfer is allowed under the remaining window cap, a subsequent
+50-unit transfer can be returned as `WindowCapExceeded` because it is evaluated against the
+first transfer's staged admission. The result is overall inadmissible when any item is blocked;
+the caller must then adjust the run rather than submit a batch that the authorization path would
+reject.
 
 ### `__check_auth` (host-invoked — not callable by anyone)
 ```rust
@@ -904,11 +975,11 @@ and honestly reports the DMS has since expired, exactly as designed.
 
 ## Testing & CI
 
-226 tests (unit + integration) cover the policy decision engine — including the regression
+231 tests (unit + integration) cover the policy decision engine — including the regression
 for the rolling-window prune underflow at low timestamps, the per-tx-cap arithmetic that
 proves blocked transactions never consume the window, and dead-man-switch timeline edge
 cases — plus `__check_auth` Ed25519 signature verification and the full enforcement
-scenario matrix (SPEC §11). Verified green this session: `226 passed; 0 failed`.
+scenario matrix (SPEC §11). Verified green this session: `229 passed; 0 failed`.
 
 These are the commands CI runs, in the order the `ci` job runs them — the same
 block a contributor can copy (see also
